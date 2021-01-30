@@ -126,7 +126,7 @@ class TumourDataset(utils.Dataset):
         # We mostly care about the x and y coordinates of each region
         # Note: In VIA 2.0, regions was changed from a dict to a list.
         annotations = json.load(open(os.path.join(dataset_dir, 'mias_train.json')))
-        for i in range(272):
+        for i in range(len(annotations)):
             annotations[i] = list(annotations[i].values())  # don't need the dict keys
             annotations[i] = [annotations[i][2], annotations[i][3]]    
             
@@ -413,7 +413,9 @@ if __name__ == '__main__':
             "mrcnn_class_logits", "mrcnn_bbox_fc",
             "mrcnn_bbox", "mrcnn_mask"])
     else:
-        model.load_weights(weights_path, by_name=True)
+        #model.load_weights(weights_path, by_name=True)
+        model.load_weights(weights_path, by_name=True, exclude=[ "mrcnn_class_logits", "mrcnn_bbox_fc", "mrcnn_bbox", "mrcnn_mask"])
+
 
     # Train or evaluate
     if args.command == "train":
@@ -424,3 +426,4 @@ if __name__ == '__main__':
     else:
         print("'{}' is not recognized. "
               "Use 'train' or 'splash'".format(args.command))
+

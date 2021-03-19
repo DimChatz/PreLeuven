@@ -99,7 +99,7 @@ def unet_model(optimizer, loss_metric, metrics, sample_width, sample_height, lr=
 	conv9 = Conv2D(32, (3, 3), activation='relu', padding='same')(up9)
 	conv9 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv9)
 
-	conv10 = Conv2D(1, (1, 1), activation='softmax')(conv9)
+	conv10 = Conv2D(1, (1, 1), activation='sigmoid')(conv9)
 
 	model = Model(inputs=[inputs], outputs=[conv10])
 
@@ -117,15 +117,12 @@ def normalize(image):
 
 # Dice Coefficient to work with Tensorflow
 def dice_coef(y_true, y_pred):
-	print("haha")
+	#y_true_ar=y_true.numpy()[0,:,:,0]
 	y_true_f = K.flatten(y_true)
 	y_pred_f = K.flatten(y_pred)
-	print("haha pre dice")
 	intersection = K.sum(y_true_f * y_pred_f)
+	print("intersection is",intersection)
 	dice = (2. * intersection + 0.00001) / (K.sum(y_true_f) + K.sum(y_pred_f) + 0.00001)
-	#dice = K.sum(y_pred_f[y_true_f == 80/255] == 80/255) * 2.0 / (K.sum(y_pred_f[y_pred_f == 80/255] == 80/255) + K.sum(y_true_f[y_true_f == 80/255] == 80/255))
-	print("haha after dice")
-	#dice=dice+K.sum(y_pred_f[y_true_f == 160/255] == 160/255) * 2.0 / (K.sum(y_pred_f[y_pred_f == 160/255] == 160/255) + K.sum(y_true_f[y_true_f == 160/255] == 160/255))
 	return dice
 
 def dice_coef_loss(y_true, y_pred):
@@ -187,7 +184,7 @@ if train_model==True:
 	history = model.fit(x=train_input, y=train_output, validation_data=(val_input,val_output), batch_size=1, epochs=2, callbacks=[DisplayCallback()])
 
 	# Save weights
-	model_filepath = '/home/tzikos/Desktop/thesis_DENSE-IN-UNET/unet_weights.h5'
+	model_filepath = '/home/tzikos/Thesis/unet_weights.h5'
 	model.save(model_filepath)
 
 	# Check results
@@ -202,9 +199,7 @@ else:
 	test_output = normalize(test_output)
 
 	# Initialize model from weights
-	model = keras.models.load_model('/home/tzikos/Desktop/thesis_DENSE-IN-UNET/unet_weights.h5')
+	model = keras.models.load_model('/home/tzikos/Thesis/unet_weights.h5')
 
 	# Test model
 	results = model.evaluate(test_input, test_output, batch_size=1)
-
-

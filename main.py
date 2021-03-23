@@ -3,6 +3,7 @@ import cv2
 import tensorflow as tf
 from tensorflow.keras.layers import *
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks	import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 from tensorflow.keras import Model
 import keras.backend as K
 from skimage.draw import disk
@@ -25,9 +26,9 @@ def dataloader(filepath, subset):
 		size = 18
 	elif subset=="hope":
 		size = 3
-	input_data=np.zeros((size,512,512,1),dtype=np.uint8)
+	input_data=np.zeros((size,128,128,1),dtype=np.uint8)
 	#input_data=K.zeros_like(input_data)
-	output_data=np.zeros((size,512,512,1),dtype=np.uint8)
+	output_data=np.zeros((size,128,128,1),dtype=np.bool)
 	#output_data=K.zeros_like(output_data)
 	# Open file and create loop
 	with open(str(filepath)+str(subset)+".txt", "r") as input_file:
@@ -36,20 +37,19 @@ def dataloader(filepath, subset):
 		for line in input_file:
 			line=line.split(" ")
 			data=cv2.imread(filepath+str(line[0])+".jpg",0)
-			data=cv2.resize(data, (512,512), interpolation=cv2.INTER_CUBIC)
+			data=cv2.resize(data, (128,128), interpolation=cv2.INTER_CUBIC)
 			input_data[count,:,:,0]=data
 			# Case of benevolent
 			if line[3]=="B":
-				rr, cc = disk((int(line[4])/2, (1024-int(line[5]))/2), int(line[6])/2, shape=(512,512))
-				output_data[count,rr,cc,0]=100
+				rr, cc = disk((int(line[4])/8, (1024-int(line[5]))/8), int(line[6])/8, shape=(128,128))
+				output_data[count,rr,cc,0]=1
 			# Case of malevolent
 			elif line[3]=="M":
-				rr, cc = disk((int(line[4])/2, (1024-int(line[5]))/2), int(line[6])/2, shape=(512,512))
-				output_data[count,rr,cc,0]=200
+				rr, cc = disk((int(line[4])/8, (1024-int(line[5]))/8), int(line[6])/8, shape=(128,128))
+				output_data[count,rr,cc,0]=1
 			count=count+1
 	input_data=input_data.astype(np.float32)
 	output_data=output_data.astype(np.float32)
-	print(input_data.dtype)
 	return input_data, output_data
 
 ###########################
@@ -57,32 +57,36 @@ def dataloader(filepath, subset):
 ###########################
 
 
-def unet_model(optimizer, loss_metric, metrics, sample_width, sample_height, lr=1e-5):
+def unet_model(num_classes, optimizer, loss_metric, metrics, sample_width, sample_height, lr=1e-5):
 	inputs = Input((sample_width, sample_height, 1))
-	print(inputs.dtype)
+	
+	# Downsampling
 	conv1 = Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
 	conv1 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv1)
 	pool1 = MaxPooling2D(pool_size=(2, 2))(conv1)
-	drop1 = Dropout(0.5)(pool1)
+	#drop1 = Dropout(0.5)(pool1)
 
-	conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(drop1)
+	conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(pool1)
 	conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(conv2)
 	pool2 = MaxPooling2D(pool_size=(2, 2))(conv2)
-	drop2 = Dropout(0.5)(pool2)
+	#drop2 = Dropout(0.5)(pool2)
 
-	conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(drop2)
+	conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(pool2)
 	conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(conv3)
 	pool3 = MaxPooling2D(pool_size=(2, 2))(conv3)
-	drop3 = Dropout(0.3)(pool3)
+	#drop3 = Dropout(0.3)(pool3)
 
-	conv4 = Conv2D(256, (3, 3), activation='relu', padding='same')(drop3)
+	conv4 = Conv2D(256, (3, 3), activation='relu', padding='same')(pool3)
 	conv4 = Conv2D(256, (3, 3), activation='relu', padding='same')(conv4)
 	pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
-	drop4 = Dropout(0.3)(pool4)
+	#drop4 = Dropout(0.3)(pool4)
 
-	conv5 = Conv2D(512, (3, 3), activation='relu', padding='same')(drop4)
+	# Bottleneck
+	conv5 = Conv2D(512, (3, 3), activation='relu', padding='same')(pool4)
 	conv5 = Conv2D(512, (3, 3), activation='relu', padding='same')(conv5)
 
+
+	# Upsampling 
 	up6 = concatenate([Conv2DTranspose(256, (2, 2), strides=(2, 2), padding='same')(conv5), conv4], axis=3)
 	conv6 = Conv2D(256, (3, 3), activation='relu', padding='same')(up6)
 	conv6 = Conv2D(256, (3, 3), activation='relu', padding='same')(conv6)
@@ -99,7 +103,8 @@ def unet_model(optimizer, loss_metric, metrics, sample_width, sample_height, lr=
 	conv9 = Conv2D(32, (3, 3), activation='relu', padding='same')(up9)
 	conv9 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv9)
 
-	conv10 = Conv2D(1, (1, 1), activation='sigmoid')(conv9)
+	# Output
+	conv10 = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid')(conv9)
 
 	model = Model(inputs=[inputs], outputs=[conv10])
 
@@ -117,12 +122,13 @@ def normalize(image):
 
 # Dice Coefficient to work with Tensorflow
 def dice_coef(y_true, y_pred):
-	#y_true_ar=y_true.numpy()[0,:,:,0]
 	y_true_f = K.flatten(y_true)
 	y_pred_f = K.flatten(y_pred)
+	print(y_true_f.dtype)
+	print(y_pred_f.dtype)
 	intersection = K.sum(y_true_f * y_pred_f)
 	print("intersection is",intersection)
-	dice = (2. * intersection + 0.00001) / (K.sum(y_true_f) + K.sum(y_pred_f) + 0.00001)
+	dice = (2. * intersection + 1) / (K.sum(y_true_f) + K.sum(y_pred_f) + 1)
 	return dice
 
 def dice_coef_loss(y_true, y_pred):
@@ -135,8 +141,9 @@ def display(display_list):
 	for i in range(len(display_list)):
 		plt.subplot(1, len(display_list), i+1)
 		plt.title(title[i])
-		plt.imshow(display_list[i])
+		plt.imshow(display_list[i],cmap='gray')
 		plt.axis('off')
+		print('The unique values are ',np.unique(display_list[i]))
 	plt.show()
 
 
@@ -167,21 +174,34 @@ train_model=True
 
 # Training option
 if train_model==True:
+
 	# Load datasets
-	train_input, train_output = dataloader(filepath, "hope")
+	train_input, train_output = dataloader(filepath, "train")
 	test_input, test_output = dataloader(filepath, "test")
-	val_input, val_output = dataloader(filepath, "hope")
+	val_input, val_output = dataloader(filepath, "val")
+	
+	# Normalize images
 	train_input = normalize(train_input)
 	test_input = normalize(test_input)
-	val_input = normalize(val_input)
-	val_output = normalize(val_output)
-	train_output = normalize(train_output)
-	test_output = normalize(test_output)
+	zval_input = normalize(val_input)
+	#val_output = normalize(val_output)
+	#train_output = normalize(train_output)
+	#test_output = normalize(test_output)
 	
 
 	# Load model
-	model = unet_model(optimizer=Adam, loss_metric=dice_coef_loss, metrics=[dice_coef], sample_width=train_input.shape[1], sample_height=train_input.shape[2],lr=1e-5)
-	history = model.fit(x=train_input, y=train_output, validation_data=(val_input,val_output), batch_size=1, epochs=2, callbacks=[DisplayCallback()])
+	model = unet_model(num_classes=1, optimizer=Adam, loss_metric='binary_crossentropy', metrics=[dice_coef], sample_width=train_input.shape[1], sample_height=train_input.shape[2],lr=1e-4)
+	model.summary()
+
+	# Define callbacks
+	callbacks = [
+	ModelCheckpoint(filepath="/home/tzikos/Thesis/unet.h5", monitor='val_loss', verbose=1, mode='min'),
+	ReduceLROnPlateau(monitor="val_loss", patience=3, factor=0.1, verbose=1, mode='min', min_lr=1e-6),
+	EarlyStopping(monitor="val_loss", patience=5, verbose=1),
+	DisplayCallback()
+	]
+
+	history = model.fit(x=train_input, y=train_output, validation_data=(val_input,val_output), batch_size=1, epochs=100, callbacks=callbacks)
 
 	# Save weights
 	model_filepath = '/home/tzikos/Thesis/unet_weights.h5'

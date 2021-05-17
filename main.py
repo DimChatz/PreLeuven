@@ -10,166 +10,136 @@ from keras.models import load_model
 from skimage.draw import disk
 from IPython.display import clear_output
 import matplotlib.pyplot as plt
-
+from keras_unet_collection import models
 
 #####################################################################
 ### Creating the dataloading function for the input and the masks ###
 #####################################################################
 
 def dataloader(filepath, subset):
-	# Initiliaze return arrays - input of shape = HYPERPARAMETER
+	# Initiliaze return arrays
 	global size
 	if subset=="train":
 		size = 96
 	elif subset=="val":
-		size = 18	
+		size = 18
 	elif subset=="test":
 		size = 18
-	elif subset=="hope":
-		size = 132
-	input_data=np.zeros((size,256,256,1),dtype=np.uint8)
-	#input_data=K.zeros_like(input_data)
-	output_data=np.zeros((size,256,256,1),dtype=np.bool)
-	#output_data=K.zeros_like(output_data)
-	# Open file and create loop
+	elif subset=="all":
+		size = 314
+	input_data=np.zeros((size*4,128,128,1),dtype=np.uint8)
+	output_data=np.zeros((size*4,128,128,1),dtype=np.uint8)
+	# Open file to read and create loop
 	with open(str(filepath)+str(subset)+".txt", "r") as input_file:
 		# Count to pass through the file
 		count=0
 		for line in input_file:
 			line=line.split(" ")
 			data=cv2.imread(filepath+str(line[0])+".jpg",0)
-			data=cv2.resize(data, (256,256), interpolation=cv2.INTER_CUBIC)
+			data=cv2.resize(data, (128,128), interpolation=cv2.INTER_CUBIC)
 			input_data[count,:,:,0]=data
+			# Flipped
+			input_data[size+count,:,:,0] = np.flip(input_data[count,:,:,0], 1)
+			# Zoom
+			cropped_in_img = input_data[count,25:102,13:115,0]
+			input_data[size*2+count,:,:,0]  = cv2.resize(cropped_in_img, (128, 128), interpolation=cv2.INTER_CUBIC)
+			# Zoom - flip
+			input_data[size*3+count,:,:,0]=np.flip(input_data[size*2+count,:,:,0], 1)
 			# Case of benevolent
 			if line[3]=="B":
 				# BE VERY CAREFUL WITH THIS DISK FUNCTION --- IT TAKES IN THE FORMAT (Y,X) NOT (X,Y)
-				rr, cc = disk(((1024-(int(line[5])))/4, (int(line[4]))/4), int(line[6])/4, shape=(256,256))
-				output_data[count,rr,cc,0]=255
+				rr, cc = disk(((1024-(int(line[5])))/8, (int(line[4]))/8), int(line[6])/8, shape=(128,128))
+				output_data[count,rr,cc,0]=1
+				# Flipped
+				output_data[size+count,:,:,0]=np.flip(output_data[count,:,:,0], 1)
+				# Zoom
+				cropped_img = output_data[count,25:102,13:115,0]
+				output_data[size*2+count,:,:,0]  = cv2.resize(cropped_img, (128, 128), interpolation=cv2.INTER_CUBIC)
+				#print(np.unique(output_data[size*2+count,0,:,:]))
+				# Zoom - flip
+				output_data[size*3+count,:,:,0]=np.flip(output_data[size*2+count,:,:,0], 1)
 			# Case of malevolent
 			elif line[3]=="M":
-				rr, cc = disk(((1024-(int(line[5])))/4, (int(line[4]))/4), int(line[6])/4, shape=(256,256))
-				output_data[count,rr,cc,0]=255
+				rr, cc = disk(((1024-(int(line[5])))/8, (int(line[4]))/8), int(line[6])/8, shape=(128,128))
+				output_data[count,rr,cc,0]=1
+				# Flipped
+				output_data[size+count,:,:,0]=np.flip(output_data[count,:,:,0], 1)
+				# Zoom
+				cropped_img = output_data[count,25:102,13:115,0]
+				output_data[size*2+count,:,:,0]  = cv2.resize(cropped_img, (128, 128), interpolation=cv2.INTER_CUBIC)
+				#print(np.unique(output_data[size*2+count,0,:,:]))
+				# Zoom - flip
+				output_data[size*3+count,:,:,0]=np.flip(output_data[size*2+count,:,:,0], 1)
 			count=count+1
 	input_data=input_data.astype(np.float32)
+	# Reshape output_data in order to be used in the weights function
+	output_data[output_data>1] = 1
 	output_data=output_data.astype(np.float32)
+	print(np.unique(output_data))
 	return input_data, output_data
 
 ###########################
 ### Definition of model ###
 ###########################
 
+# Definition of block functions
+def encoder_block(inputs,filter_size, kernel_size):
+	conv = Conv2D(filter_size, (1,kernel_size), activation='relu', padding='same', kernel_initializer='he_normal')(inputs)
+	conv = Conv2D(filter_size, (kernel_size,1), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = BatchNormalization(axis=-1)(conv)
+	conv = Conv2D(filter_size, (1,kernel_size), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = Conv2D(filter_size, (kernel_size,1), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = BatchNormalization(axis=-1)(conv)
+	pool = MaxPooling2D(pool_size=(2, 2))(conv)
+	drop = Dropout(0.3)(pool)
+	return conv,drop
 
+def bottleneck(inputs,filter_size, kernel_size):
+	conv = Conv2D(filter_size, (1,kernel_size), activation='relu', padding='same', kernel_initializer='he_normal')(inputs)
+	conv = Conv2D(filter_size, (kernel_size,1), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = BatchNormalization(axis=-1)(conv)
+	conv = Conv2D(filter_size, (1,kernel_size), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = Conv2D(filter_size, (kernel_size,1), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = BatchNormalization(axis=-1)(conv)
+	return conv
+
+def decoder_block(input1, input2,filter_size, kernel_size):
+	up = concatenate([Conv2DTranspose(filter_size, (kernel_size,kernel_size), strides=(2, 2), padding='same')(input1), input2], axis=3)
+	conv = Conv2D(filter_size, (1,kernel_size), activation='relu', padding='same', kernel_initializer='he_normal')(up)
+	conv = Conv2D(filter_size, (kernel_size,1), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = BatchNormalization(axis=-1)(conv)
+	conv = Conv2D(filter_size, (1,kernel_size), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = Conv2D(filter_size, (kernel_size,1), activation='relu', padding='same', kernel_initializer='he_normal')(conv)
+	conv = BatchNormalization(axis=-1)(conv)
+	return conv
+
+
+# Main model
 def unet_model(num_classes, optimizer, loss_metric, metrics, sample_width, sample_height, lr=1e-5):
 	inputs = Input((sample_width, sample_height, 1))
 	
 	# Downsampling
-	conv1 = Conv2D(16, (1, 3), activation='relu', padding='same')(inputs)
-	conv1 = Conv2D(16, (3, 1), activation='relu', padding='same')(conv1)
-	conv1 = Conv2D(16, (1, 3), activation='relu', padding='same')(conv1)
-	conv1 = Conv2D(16, (3, 1), activation='relu', padding='same')(conv1)
-	pool1 = MaxPooling2D(pool_size=(2, 2))(conv1)
-	drop1 = Dropout(0.3)(pool1)
-
-	conv2 = Conv2D(32, (1, 3), activation='relu', padding='same')(drop1)
-	conv2 = Conv2D(32, (3, 1), activation='relu', padding='same')(conv2)
-	conv2 = Conv2D(32, (1, 3), activation='relu', padding='same')(conv2)
-	conv2 = Conv2D(32, (3, 1), activation='relu', padding='same')(conv2)
-	pool2 = MaxPooling2D(pool_size=(2, 2))(conv2)
-	drop2 = Dropout(0.3)(pool2)
-
-	conv3 = Conv2D(64, (1, 3), activation='relu', padding='same')(drop2)
-	conv3 = Conv2D(64, (3, 1), activation='relu', padding='same')(conv3)
-	conv3 = Conv2D(64, (1, 3), activation='relu', padding='same')(conv3)
-	conv3 = Conv2D(64, (3, 1), activation='relu', padding='same')(conv3)
-	pool3 = MaxPooling2D(pool_size=(2, 2))(conv3)
-	drop3 = Dropout(0.3)(pool3)
-
-	conv4 = Conv2D(128, (1, 3), activation='relu', padding='same')(drop3)
-	conv4 = Conv2D(128, (3, 1), activation='relu', padding='same')(conv4)
-	conv4 = Conv2D(128, (1, 3), activation='relu', padding='same')(conv4)
-	conv4 = Conv2D(128, (3, 1), activation='relu', padding='same')(conv4)
-	pool4 = MaxPooling2D(pool_size=(2, 2))(conv4)
-	drop4 = Dropout(0.3)(pool4)
-
-	conv5 = Conv2D(256, (1, 3), activation='relu', padding='same')(drop4)
-	conv5 = Conv2D(256, (3, 1), activation='relu', padding='same')(conv5)
-	conv5 = Conv2D(256, (1, 3), activation='relu', padding='same')(conv5)
-	conv5 = Conv2D(256, (3, 1), activation='relu', padding='same')(conv5)
-	pool5 = MaxPooling2D(pool_size=(2, 2))(conv5)
-	drop5 = Dropout(0.3)(pool5)
-
-	conv6 = Conv2D(512, (1, 3), activation='relu', padding='same')(drop5)
-	conv6 = Conv2D(512, (3, 1), activation='relu', padding='same')(conv6)
-	conv6 = Conv2D(512, (1, 3), activation='relu', padding='same')(conv6)
-	conv6 = Conv2D(512, (3, 1), activation='relu', padding='same')(conv6)
-	pool6 = MaxPooling2D(pool_size=(2, 2))(conv6)
-	drop6 = Dropout(0.3)(pool6)
-
-	conv7 = Conv2D(1024, (1, 3), activation='relu', padding='same')(drop6)
-	conv7 = Conv2D(1024, (3, 1), activation='relu', padding='same')(conv7)
-	conv7 = Conv2D(1024, (1, 3), activation='relu', padding='same')(conv7)
-	conv7 = Conv2D(1024, (3, 1), activation='relu', padding='same')(conv7)
-	pool7 = MaxPooling2D(pool_size=(2, 2))(conv7)
-	drop7 = Dropout(0.3)(pool7)
+	conv1, drop1 = encoder_block(inputs,32,3)
+	conv2, drop2 = encoder_block(drop1,64,3)
+	conv3, drop3 = encoder_block(drop2,128,3)
 
 	
 	# Bottleneck
-	conv8 = Conv2D(2048, (1, 3), activation='relu', padding='same')(drop7)
-	conv8 = Conv2D(2048, (3, 1), activation='relu', padding='same')(conv8)
-	conv8 = Conv2D(2048, (1, 3), activation='relu', padding='same')(conv8)
-	conv8 = Conv2D(2048, (3, 1), activation='relu', padding='same')(conv8)
+	conv4 = bottleneck(drop3,256,3)
 
-
-	# Upsampling 
-	up9 = concatenate([Conv2DTranspose(1024, (2, 2), strides=(2, 2), padding='same')(conv8), conv7], axis=3)
-	conv9 = Conv2D(1024, (1, 3), activation='relu', padding='same')(up9)
-	conv9 = Conv2D(1024, (3, 1), activation='relu', padding='same')(conv9)
-	conv9 = Conv2D(1024, (1, 3), activation='relu', padding='same')(conv9)
-	conv9 = Conv2D(1024, (3, 1), activation='relu', padding='same')(conv9)
-
-	up10 = concatenate([Conv2DTranspose(512, (2, 2), strides=(2, 2), padding='same')(conv9), conv6], axis=3)
-	conv10 = Conv2D(512, (1, 3), activation='relu', padding='same')(up10)
-	conv10 = Conv2D(512, (3, 1), activation='relu', padding='same')(conv10)
-	conv10 = Conv2D(512, (1, 3), activation='relu', padding='same')(conv10)
-	conv10 = Conv2D(512, (3, 1), activation='relu', padding='same')(conv10)
-
-	up11 = concatenate([Conv2DTranspose(256, (2, 2), strides=(2, 2), padding='same')(conv10), conv5], axis=3)
-	conv11 = Conv2D(256, (1, 3), activation='relu', padding='same')(up11)
-	conv11 = Conv2D(256, (3, 1), activation='relu', padding='same')(conv11)
-	conv11 = Conv2D(256, (1, 3), activation='relu', padding='same')(conv11)
-	conv11 = Conv2D(256, (3, 1), activation='relu', padding='same')(conv11)
-
-	up12 = concatenate([Conv2DTranspose(128, (2, 2), strides=(2, 2), padding='same')(conv11), conv4], axis=3)
-	conv12 = Conv2D(128, (1, 3), activation='relu', padding='same')(up12)
-	conv12 = Conv2D(128, (3, 1), activation='relu', padding='same')(conv12)
-	conv12 = Conv2D(128, (1, 3), activation='relu', padding='same')(conv12)
-	conv12 = Conv2D(128, (3, 1), activation='relu', padding='same')(conv12)
-
-	up13 = concatenate([Conv2DTranspose(64, (2, 2), strides=(2, 2), padding='same')(conv12), conv3], axis=3)
-	conv13 = Conv2D(64, (1, 3), activation='relu', padding='same')(up13)
-	conv13 = Conv2D(64, (3, 1), activation='relu', padding='same')(conv13)
-	conv13 = Conv2D(64, (1, 3), activation='relu', padding='same')(conv13)
-	conv13 = Conv2D(64, (3, 1), activation='relu', padding='same')(conv13)
-
-	up14 = concatenate([Conv2DTranspose(32, (2, 2), strides=(2, 2), padding='same')(conv13), conv2], axis=3)
-	conv14 = Conv2D(32, (1, 3), activation='relu', padding='same')(up14)
-	conv14 = Conv2D(32, (3, 1), activation='relu', padding='same')(conv14)
-	conv14 = Conv2D(32, (1, 3), activation='relu', padding='same')(conv14)
-	conv14 = Conv2D(32, (3, 1), activation='relu', padding='same')(conv14)
-
-	up15 = concatenate([Conv2DTranspose(16, (2, 2), strides=(2, 2), padding='same')(conv14), conv1], axis=3)
-	conv15 = Conv2D(16, (1, 3), activation='relu', padding='same')(up15)
-	conv15 = Conv2D(16, (3, 1), activation='relu', padding='same')(conv15)
-	conv15 = Conv2D(16, (1, 3), activation='relu', padding='same')(conv15)
-	conv15 = Conv2D(16, (3, 1), activation='relu', padding='same')(conv15)
+	# Upsampling
+	conv5 = decoder_block(conv4,conv3,128,2)
+	conv6 = decoder_block(conv5,conv2,64,2)
+	conv7 = decoder_block(conv6,conv1,32,2)
 
 
 	# Output
-	conv16 = Conv2D(num_classes, (1, 1), padding='same', activation='sigmoid')(conv15)
+	conv7 = Conv2D(num_classes, 1, padding='same', activation='softmax')(conv7)
+	conv7 = Reshape((sample_width*sample_height,num_classes))(conv7)
 
-	model = Model(inputs=[inputs], outputs=[conv16])
+	model = Model(inputs=[inputs], outputs=[conv7])
 
-	model.compile(optimizer=optimizer(lr=lr), loss=loss_metric, metrics=metrics)
+	model.compile(optimizer=optimizer(lr=lr), loss=loss_metric, metrics=metrics, sample_weight_mode="temporal")
 	return model
 
 ######################
@@ -182,18 +152,15 @@ def normalize(image):
 	return arr
 
 # Dice Coefficient to work with Tensorflow
-def dice_coef(y_true, y_pred):
-	y_true_f = K.flatten(y_true)
-	y_pred_f = K.flatten(y_pred)
-	#print(y_true_f.dtype)
-	#print(y_pred_f.dtype)
-	intersection = K.sum(y_true_f * y_pred_f)
-	#print("intersection is",intersection)
-	dice = (2. * intersection + 0.1) / (K.sum(y_true_f) + K.sum(y_pred_f) + 0.1)
-	return dice
+def dice_coef(y_true, y_pred, smooth=0.001):
+  intersection = K.sum(y_true * y_pred)
+  union = K.sum(y_true) + K.sum(y_pred)
+  dice = (2. * intersection + smooth)/(union + smooth)
+  return dice
 
-def dice_coef_loss(y_true, y_pred):
-	return -dice_coef(y_true, y_pred)
+
+def dice_coef_loss(y_true, y_pred,smooth=0.001):
+	return -dice_coef(y_true, y_pred, smooth)
 
 # Function to display images
 def display(display_list):
@@ -202,25 +169,41 @@ def display(display_list):
 	for i in range(len(display_list)):
 		plt.subplot(1, len(display_list), i+1)
 		plt.title(title[i])
-		plt.imshow(display_list[i],cmap='gray')
+		plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i]))
 		plt.axis('off')
-		#print('The unique values are ',np.unique(display_list[i]))
 	plt.show()
 
 
-# Predictions of final images
-def show_predictions(tensor_in,tensor_out, num=1):
+# Predictions of images
+def show_predictions(tensor_in,tensor_out, num=6, size=314):
 	for i in range(num):
 		i_input=tensor_in[i,:,:,:].reshape(1,tensor_in.shape[1],tensor_in.shape[2],tensor_in.shape[3])
-		pred_mask = model.predict(i_input)
-		display([tensor_in[i,:,:,0], tensor_out[i,:,:,0], pred_mask[0,:,:,0]])
+		#print('The unique values for the ground truth in displaycallback are ',np.unique(i_output[i]))
+		pred_mask = unet.predict(i_input)
+		pred_mask_test = create_mask(pred_mask)
+		pred_mask_test = pred_mask_test.reshape((pred_mask_test.shape[1],pred_mask_test.shape[2],1))
+		display([tensor_in[i,:,:,:], tensor_out[i,:,:,:], pred_mask_test[:,:,:]])
 
-# Callback to display masks as model trains
+# Callback to display masks as model trains at epoch end
 class DisplayCallback(tf.keras.callbacks.Callback):
 	def on_epoch_end(self, epoch, logs=None):
 		clear_output(wait=True)
 		show_predictions(train_input,train_output)
-		print ('\nSample Prediction after epoch {}\n'.format(epoch+1))
+
+
+def create_mask(pred_mask):
+	pred_mask = np.argmax(pred_mask, axis = -1)
+	return pred_mask
+
+def iou(y_true, y_pred):
+	smooth=0.001
+	intersection = K.sum(K.abs(y_true * y_pred), axis=[1,2])
+	union = K.sum(y_true,[1,2,3])+K.sum(y_pred,[1,2,3])-intersection
+	iou = K.mean((intersection + smooth) / (union + smooth), axis=0)
+	return iou
+
+def iou_loss(y_true, y_preds):
+	return -iou(y_pred, y_true)
 
 #####################
 ### MAIN PROGRAM ####
@@ -232,13 +215,10 @@ class DisplayCallback(tf.keras.callbacks.Callback):
 filepath = "/home/tzikos/Downloads/train/"
 
 # Variable to train model or load from wright
-train_model=False
-
-
-
+train_model=True
 
 # Load datasets
-train_input, train_output = dataloader(filepath, "train")
+train_input, train_output = dataloader(filepath, "all")
 test_input, test_output = dataloader(filepath, "test")
 val_input, val_output = dataloader(filepath, "val")
 	
@@ -250,24 +230,26 @@ val_input = normalize(val_input)
 	
 # Training option
 if train_model==True:
-
 	# Load model
-	model = unet_model(num_classes=1, optimizer=Adam, loss_metric='binary_crossentropy', metrics=[dice_coef], sample_width=train_input.shape[1], sample_height=train_input.shape[2],lr=1e-4)
-	model.summary()
+	unet = models.unet_2d((128, 128, 1), [32, 64, 128, 256], n_labels=2,
+                      stack_num_down=2, stack_num_up=2,
+                      activation='ReLU', output_activation='Softmax',
+                      batch_norm=True, pool=True, unpool=False, name='unet')
+	unet.compile(optimizer=Adam(lr=1e-3), loss='binary_crossentropy', metrics=['accuracy'])
+	unet.summary()
 
 	# Define callbacks
 	callbacks = [
 	ModelCheckpoint(filepath="/home/tzikos/Thesis/unet.h5", monitor='val_loss', verbose=1, save_best_only=True, mode='min'),
-	ReduceLROnPlateau(monitor="val_loss", patience=2, factor=0.1, verbose=1, mode='min', min_lr=1e-8)
-	#EarlyStopping(monitor="val_loss", patience=5, verbose=1)
-	#DisplayCallback()
+	ReduceLROnPlateau(monitor="val_loss", patience=2, factor=0.1, verbose=1, mode='min', min_lr=1e-8),
+	EarlyStopping(monitor="val_loss", patience=5, verbose=1),
+	DisplayCallback()
 	]
 
-	history = model.fit(x=train_input, y=train_output, validation_data=(val_input,val_output), batch_size=1, epochs=50, callbacks=callbacks)
-
-	# Show masks for test set
-	model = unet_model(num_classes=1, optimizer=Adam, loss_metric='binary_crossentropy', metrics=[dice_coef], sample_width=train_input.shape[1], sample_height=train_input.shape[2],lr=1e-4)
-	model = load_model("/home/tzikos/Thesis/unet.h5", custom_objects = {"dice_coef": dice_coef})
+	show_predictions(train_input,train_output)
+	history = unet.fit(x=train_input, y=train_output, 
+		validation_data=(val_input,val_output), 
+	batch_size=4, epochs=50, callbacks=callbacks)
 
 	# Test model
 	show_predictions(train_input, train_output, num=train_input.shape[0])
@@ -275,8 +257,8 @@ if train_model==True:
 # Loading from weights option
 else:
 	# Initialize model from weights
-	model = unet_model(num_classes=1, optimizer=Adam, loss_metric='binary_crossentropy', metrics=[dice_coef], sample_width=train_input.shape[1], sample_height=train_input.shape[2],lr=1e-4)
-	model = load_model('/home/tzikos/Thesis/unet.h5', custom_objects = {"dice_coef": dice_coef})
+	model = unet_model(num_classes=1, optimizer=Adam, loss_metric=dice_coef_loss, metrics=[dice_coef], sample_width=train_input.shape[1], sample_height=train_input.shape[2],lr=1e-5)
+	model = load_model('/home/tzikos/Thesis/unet.h5', custom_objects = {"dice_coef": dice_coef,"dice_coef_loss": dice_coef_loss})
 
 	# Test model
 	show_predictions(test_input, test_output, num=test_input.shape[0])

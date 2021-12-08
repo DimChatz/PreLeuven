@@ -1,3 +1,5 @@
+# Import all libraries
+
 import numpy as np
 import cv2
 import tensorflow as tf
@@ -22,6 +24,7 @@ from tensorboard.plugins.hparams import api as hp
 def dataloader_mias(filepath, subset):
 	# Initiliaze return arrays
 	global size
+	# The different subsets are for when I played around to split the images to the ratio you want/need
 	if subset=="train":
 		size = 96
 	elif subset=="val":
@@ -38,8 +41,11 @@ def dataloader_mias(filepath, subset):
 		count=0
 		for line in input_file:
 			line=line.split(" ")
+			# Read iamge
 			data=cv2.imread(filepath+str(line[0])+".jpg",0)
+			# Reasize so as to not crash the pc or to speed up training
 			data=cv2.resize(data, (128,128), interpolation=cv2.INTER_CUBIC)
+			# Add it to the array
 			input_data[count,:,:,0]=data
 			# Flipped
 			input_data[size+count,:,:,0] = np.flip(input_data[count,:,:,0], 1)
@@ -89,7 +95,9 @@ def dataloader_ddsm(filepath,size):
 	for file in os.listdir(filepath):
 		# Find paths
 		test_path = os.path.join(filepath, file)
+		# Read images
 		data=cv2.imread(test_path,0)
+		# Move them to correct array
 		input_data[count,:,:,0] = data
 		count = count + 1
 	return input_data
@@ -158,9 +166,9 @@ def unet_model(num_classes, optimizer, loss_metric, metrics, sample_width, sampl
     return model
 
 
-######################
-### Util functions ###
-######################
+#########################
+### Utility functions ###
+#########################
 
 # Normalize images
 def normalize(image):
@@ -168,20 +176,24 @@ def normalize(image):
 	return arr
 
 # Dice Coefficient to work with Tensorflow
+# You need the smooth so as to avoid creating NaNs
 def dice_coef(y_true, y_pred, smooth=0.001):
   intersection = K.sum(y_true * y_pred)
   union = K.sum(y_true) + K.sum(y_pred)
   dice = (2. * intersection + smooth)/(union + smooth)
   return dice
 
-
+# You can put a minus in the metrics to create loss functions
 def dice_coef_loss(y_true, y_pred,smooth=0.001):
 	return -dice_coef(y_true, y_pred, smooth)
 
 # Function to display images
 def display(display_list):
+	# Initialize figure size
 	plt.figure(figsize=(15, 15))
+	# Put titles
 	title = ['Input Image', 'True Mask', 'Predicted Mask']
+	# Create images
 	for i in range(len(display_list)):
 		plt.subplot(1, len(display_list), i+1)
 		plt.title(title[i])
@@ -191,7 +203,10 @@ def display(display_list):
 
 
 # Predictions of images
-def show_predictions(tensor_in,tensor_out, num=6, size=314):
+# tensor_in is input images
+# tensor_out is masked input
+# num is how many images to see when called
+def show_predictions(tensor_in,tensor_out, num=6):
 	for i in range(num):
 		i_input=tensor_in[i,:,:,:].reshape(1,tensor_in.shape[1],tensor_in.shape[2],tensor_in.shape[3])
 		#print('The unique values for the ground truth in displaycallback are ',np.unique(i_output[i]))

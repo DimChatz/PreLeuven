@@ -209,11 +209,17 @@ def display(display_list):
 def show_predictions(tensor_in,tensor_out, num=6):
 	for i in range(num):
 		i_input=tensor_in[i,:,:,:].reshape(1,tensor_in.shape[1],tensor_in.shape[2],tensor_in.shape[3])
-		#print('The unique values for the ground truth in displaycallback are ',np.unique(i_output[i]))
+		# Use the current state of the model to predict
 		pred_mask = unet.predict(i_input)
 		pred_mask_test = create_mask(pred_mask)
 		pred_mask_test = pred_mask_test.reshape((pred_mask_test.shape[1],pred_mask_test.shape[2],1))
 		display([tensor_in[i,:,:,:], tensor_out[i,:,:,:], pred_mask_test[:,:,:]])
+
+# Create mask
+def create_mask(pred_mask):
+	pred_mask = np.argmax(pred_mask, axis = -1)
+	return pred_mask
+
 
 # Callback to display masks as model trains at epoch end
 class DisplayCallback(tf.keras.callbacks.Callback):
@@ -221,17 +227,14 @@ class DisplayCallback(tf.keras.callbacks.Callback):
 		clear_output(wait=True)
 		show_predictions(train_input,train_masks)
 
-
-def create_mask(pred_mask):
-	pred_mask = np.argmax(pred_mask, axis = -1)
-	return pred_mask
-
+# Intesection over union metric		
 def iou(y_true, y_pred):
 	intersection = K.sum(y_true * y_pred)
 	union =  K.sum(y_true) +  K.sum(y_pred) - intersection
 	x = (intersection + 1e-15) / (union + 1e-15)
 	return x
 
+# IoU as loss with a minus
 def iou_loss(y_true, y_pred):
 	return -iou(y_pred, y_true)
 
@@ -245,7 +248,7 @@ filepath_train_img = "/home/bitu/Downloads/train/images"
 filepath_train_mask = "/home/bitu/Downloads/train/masks"
 filepath_test_img = "/home/bitu/Downloads/test/images"
 filepath_test_mask = "/home/bitu/Downloads/test/masks"
-
+# train mode to get the programm to train or to check and test
 train_mode = False
 
 
@@ -269,13 +272,19 @@ if train_mode == True:
 
     # Define callbacks
     callbacks = [
+	# Callback to save the best model
     ModelCheckpoint(filepath="C:/Users/xatzo/Downloads/unet_new.h5", monitor='val_loss', verbose=1, save_best_only=True, mode='min'),
+	# Callback to reduce learning rate incase training plateaus
     ReduceLROnPlateau(monitor="val_loss", patience=2, factor=0.1, verbose=1, mode='min', min_lr=1e-8),
+	# To stop the training early if further training does nothing
     EarlyStopping(monitor="val_loss", patience=5, verbose=1),
+	# Callback to check qualitative resutls at end of training
     DisplayCallback()
     ]
 
+	# Display some data before initializing training
     show_predictions(test_input,test_masks)
+	# Train
     history = unet.fit(x=test_input, y=test_masks, 
         validation_data=(test_input,test_masks), 
     batch_size=1, epochs=50, callbacks=callbacks)

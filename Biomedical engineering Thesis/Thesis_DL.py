@@ -1,12 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# # Thesis Mammo Deep Learning
-
-# ### Importing Libraries
-
-# In[1]:
-
+# Importing Libraries
 
 import numpy as np
 import cv2
@@ -23,14 +15,11 @@ import matplotlib.pyplot as plt
 import os
 
 
-# ### Load data from CBIS-DDSM
-
-# In[ ]:
-
-
+# Load data from CBIS-DDSM
+# For ram reasons at some point I wanted the specified count of images
 def dataloader_ddsm(filepath,size):
     count = 0
-    #array for reading into
+    # Array for reading into
     input_data=np.zeros((size,512,512,1),dtype=np.uint8)
     # Read
     for file in os.listdir(filepath):
@@ -45,11 +34,7 @@ def dataloader_ddsm(filepath,size):
     return input_data
 
 
-# ### Load data from MIAS
-
-# In[ ]:
-
-
+# Load data from MIAS
 def dataloader_mias(filepath, subset):
     # Initiliaze return arrays
     global size
@@ -103,16 +88,13 @@ def dataloader_mias(filepath, subset):
             count=count+1
     input_data=input_data.astype(np.float32)
     input_data = np.asarray(input_data)
-    # Reshape output_data in order to be used in the weights function
+    # Reshape output_data in order to be used in the weights function - NO LONGER SUPPORTED
     output_data[output_data>1] = 1
     output_data=output_data.astype(np.float32)
     output_data = np.asarray(output_data)
     return input_data, output_data
 
 
-# ## Functions for Neural model
-
-# In[ ]:
 
 
 # Definition of block functions
@@ -147,9 +129,6 @@ def decoder_block(input1, input2,filter_size, kernel_size):
     return conv
 
 
-# # Main Model
-
-# In[ ]:
 
 
 # Main model
@@ -180,11 +159,6 @@ def unet_model(num_classes, optimizer, loss_metric, metrics, sample_width, sampl
     return model
 
 
-# ## Utility functions
-
-# In[ ]:
-
-
 # Normalize images
 def normalize(image):
     arr = image/255
@@ -197,12 +171,15 @@ def dice_coef(y_true, y_pred, smooth=0.001):
     dice = (2. * intersection + smooth)/(union + smooth)
     return dice
 
+# with a minus it can become loss (or with 1-dice)
 def dice_coef_loss(y_true, y_pred,smooth=0.001):
     return -dice_coef(y_true, y_pred, smooth)
 
 # Function to display images
 def display(display_list):
+    # image display size
     plt.figure(figsize=(15, 15))
+    # image title
     title = ['Input Image', 'True Mask', 'Predicted Mask']
     for i in range(len(display_list)):
         plt.subplot(1, len(display_list), i+1)
@@ -212,6 +189,9 @@ def display(display_list):
     plt.show()
 
 # Predictions of images
+# tensor_in is input images
+# tensor_out is masked input
+# num is how many images to see when called
 def show_predictions(tensor_in,tensor_out, num=1):
     for i in range(num):
         print("The input tensor has shape ", tensor_in[:,:,:,:].shape)
@@ -227,29 +207,28 @@ def show_predictions(tensor_in,tensor_out, num=1):
         #pred_mask_test = pred_mask_test.reshape((pred_mask_test.shape[1],pred_mask_test.shape[2],1))
         display([tensor_in[i,:,:,:], tensor_out[i,:,:,:], pred_mask_test[:,:,:]])
 
+# Create mask
+def create_mask(pred_mask):
+    pred_mask = np.argmax(pred_mask, axis = -1)
+    return pred_mask
+
+
 # Callback to display masks as model trains at epoch end
 class DisplayCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         clear_output(wait=True)
         show_predictions(test_input,test_masks)
 
-def create_mask(pred_mask):
-    pred_mask = np.argmax(pred_mask, axis = -1)
-    return pred_mask
-
+# Intesection over union metric		
 def iou(y_true, y_pred):
     intersection = K.sum(y_true * y_pred)
     union =  K.sum(y_true) +  K.sum(y_pred) - intersection
     x = (intersection + 1e-15) / (union + 1e-15)
     return x
 
+# IoU as loss with a minus
 def iou_loss(y_true, y_pred):
     return -iou(y_pred, y_true)
-
-
-# # Main programm
-
-# In[ ]:
 
 
 # HYPERPARAMETERS
@@ -259,7 +238,7 @@ filepath_train_img = "D:/Windows/torrents/manifest-ZkhPvrLo5216730872708713142/P
 filepath_train_mask = "D:/Windows/torrents/manifest-ZkhPvrLo5216730872708713142/Processed/train/masks/"
 filepath_test_img = "D:/Windows/torrents/manifest-ZkhPvrLo5216730872708713142/Processed/test/images/"
 filepath_test_mask = "D:/Windows/torrents/manifest-ZkhPvrLo5216730872708713142/Processed/test/masks/"
-
+# train mode to get the programm to train or to check and test
 train_mode = False
 
 # Get data DDSM
@@ -282,15 +261,21 @@ if train_mode == True:
     unet.compile(optimizer=Adam(lr=1e-3), loss = iou_loss,  metrics=[dice_coef])
     unet.summary()
 
-    # Define callbacks
+ # Define callbacks
     callbacks = [
+	# Callback to save the best model
     ModelCheckpoint(filepath="C:/Users/xatzo/Downloads/unet_new.h5", monitor='val_loss', verbose=1, save_best_only=True, mode='min'),
+	# Callback to reduce learning rate incase training plateaus
     ReduceLROnPlateau(monitor="val_loss", patience=2, factor=0.1, verbose=1, mode='min', min_lr=1e-8),
+	# To stop the training early if further training does nothing
     EarlyStopping(monitor="val_loss", patience=5, verbose=1),
+	# Callback to check qualitative resutls at end of training
     DisplayCallback()
     ]
 
+	# Display some data before initializing training
     show_predictions(test_input,test_masks)
+    # Train
     history = unet.fit(x=test_input, y=test_masks, 
         validation_data=(test_input,test_masks), 
     batch_size=1, epochs=50, callbacks=callbacks)
@@ -308,10 +293,4 @@ else:
     # Test model
     show_predictions(train_input, train_masks, num=5)
     show_predictions(test_input, test_masks, num=5)
-
-
-# In[ ]:
-
-
-
 
